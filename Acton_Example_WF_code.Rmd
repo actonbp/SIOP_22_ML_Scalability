@@ -1,0 +1,142 @@
+---
+title: "Acton_Modeling_Sample"
+author: "Bryan Acton"
+date: "4/29/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load packages:
+```{r setup, include=FALSE}
+packages <- c("ranger", "readr", "stringr", "tidymodels", "vip")
+
+lapply(packages, require, character.only = T)
+```
+
+
+Load data (add your filed here):
+```{r}
+```
+
+
+```{r}
+dat <- dat %>%
+  mutate(words = str_count(Item_Content))
+```
+
+####################################################
+MODELING PART 1: TOP DOWN:
+####################################################
+```{r}
+data_split <- initial_split(dat, prop = 0.75)
+
+items_train <- training(data_split)
+items_test  <- testing(data_split)
+```
+
+```{r}
+cores <- parallel::detectCores()
+```
+
+Random forest: 
+
+```{r}
+preds <- dat%>%
+  select(-Item_Content, Scale, -Memory, -Item)%>%
+  colnames()
+```
+
+```{r}
+last_rf_mod <- 
+  rand_forest(trees = 1000) %>% 
+  set_engine("ranger", importance = "impurity") %>% 
+  set_mode("regression")
+```
+
+```{r}
+rf_xy_fit <- 
+  last_rf_mod %>%
+  fit_xy(
+    x = items_train[, preds],
+    y = items_train$Memory
+  )
+
+rf_xy_fit
+
+```
+
+
+```{r}
+test_results <- 
+  items_test %>%
+  select(Memory) %>%
+  bind_cols(
+    predict(rf_xy_fit, new_data = items_test[, preds])
+  )
+```
+
+get variable importance:
+```{r}
+rf_xy_fit %>% 
+  vip(num_features = 20)
+```
+
+get model performance on test data:
+```{r}
+test_results %>% metrics(truth = Memory, estimate = .pred) 
+```
+
+####################################################
+MODELING PART 1: BOTTOM UP:
+####################################################
+
+```{r}
+spacyr::spacy_initialize(entity = TRUE)
+library(textrecipes)
+
+items_rec <- recipe(Memory ~ Item_Content, data = items_train) %>%
+  step_tokenize(Item_Content, engine = "spacyr") %>%
+  step_lemma(Item_Content) %>%
+  step_tokenfilter(Item_Content, max_tokens = 1e3) %>%
+  step_tfidf(Item_Content) %>%
+  step_normalize(all_predictors())
+
+items_rec
+```
+```{r}
+items_prep <- prep(items_rec)
+items_bake <- bake(items_prep, new_data = NULL)
+```
+
+```{r}
+items_wf <- workflow() %>%
+  add_recipe(items_rec)
+
+items_wf
+```
+
+```{r}
+svm_spec <- svm_linear() %>%
+  set_mode("regression") %>%
+  set_engine("LiblineaR")
+
+svm_spec
+```
+
+```{r}
+svm_fit <- items_wf %>%
+  add_model(svm_spec) %>%
+  fit(data = items_train)
+```
+
+Get variable importance metric:
+```{r}
+svm_fit %>%
+  pull_workflow_fit() %>%
+  tidy() %>%
+  arrange(-estimate)
+```
+
